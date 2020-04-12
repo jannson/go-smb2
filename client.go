@@ -28,10 +28,10 @@ func (d *Dialer) Dial(netConn net.Conn) (*Client, error) {
 }
 
 func (d *Dialer) DialContext(netConn net.Conn, ctx context.Context) (*Client, error) {
-	tcpConn, ok := netConn.(*net.TCPConn)
-	if !ok {
-		return nil, &InternalError{"unsupported transport"}
-	}
+	//tcpConn, ok := netConn.(*net.TCPConn)
+	//if !ok {
+	//	return nil, &InternalError{"unsupported transport"}
+	//}
 
 	maxCreditBalance := d.MaxCreditBalance
 	if maxCreditBalance == 0 {
@@ -40,7 +40,7 @@ func (d *Dialer) DialContext(netConn net.Conn, ctx context.Context) (*Client, er
 
 	a := openAccount(maxCreditBalance)
 
-	conn, err := d.Negotiator.negotiate(direct(tcpConn), a, ctx)
+	conn, err := d.Negotiator.negotiate(direct(netConn), a, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -874,7 +874,7 @@ func (f *RemoteFile) Readdir(n int) (fi []os.FileInfo, err error) {
 	fi = f.dirents
 
 	if len(fi) == 0 {
-		return nil, io.EOF
+		return make([]os.FileInfo, 0), nil
 	}
 
 	if n > 0 && len(fi) >= n {
@@ -925,7 +925,7 @@ func (f *RemoteFile) seek(offset int64, whence int, ctx context.Context) (ret in
 		req := &QueryInfoRequest{
 			FileInfoClass:         FileStandardInformation,
 			AdditionalInformation: 0,
-			Flags: 0,
+			Flags:                 0,
 		}
 
 		infoBytes, err := f.queryInfo(req, ctx)
@@ -958,7 +958,7 @@ func (f *RemoteFile) stat(ctx context.Context) (os.FileInfo, error) {
 	req := &QueryInfoRequest{
 		FileInfoClass:         FileAllInformation,
 		AdditionalInformation: 0,
-		Flags: 0,
+		Flags:                 0,
 	}
 
 	infoBytes, err := f.queryInfo(req, ctx)
