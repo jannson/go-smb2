@@ -3,15 +3,18 @@ package smb2
 import (
 	"context"
 	"io"
+	"log"
 	"net"
 	"os"
 	"runtime"
 	"strings"
-	"sync"
+
+	//"sync"
 	"time"
 
 	. "github.com/hirochachacha/go-smb2/internal/erref"
 	. "github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/jiajia/sdk/lib/sync"
 )
 
 // Dialer contains options for func (*Dialer) Dial.
@@ -108,7 +111,12 @@ func (fs *RemoteFileSystem) Create(name string) (*RemoteFile, error) {
 }
 
 func (fs *RemoteFileSystem) newFile(fd FileIdDecoder, name string) *RemoteFile {
-	f := &RemoteFile{fs: fs, fd: fd.Decode(), name: name, ctx: context.Background()}
+	f := &RemoteFile{fs: fs,
+		fd:   fd.Decode(),
+		name: name,
+		ctx:  context.Background(),
+		m:    sync.NewMutex(),
+	}
 
 	runtime.SetFinalizer(f, func(f *RemoteFile) { f.close(context.Background()) })
 
@@ -651,12 +659,29 @@ type RemoteFile struct {
 	ctx context.Context
 }
 
+type remoteFileR struct {
+	f *RemoteFile
+}
+
+func (r *remoteFileR) Read(b []byte) (int, error) {
+	return r.f.read_(b)
+}
+
+type remoteFileW struct {
+	f *RemoteFile
+}
+
+func (r *remoteFileW) Write(b []byte) (int, error) {
+	return r.f.write_(b)
+}
+
 func (f *RemoteFile) WithContext(ctx context.Context) *RemoteFile {
 	return &RemoteFile{
 		fs:   f.fs,
 		fd:   f.fd,
 		name: f.name,
 		ctx:  ctx,
+		m:    sync.NewMutex(),
 	}
 }
 
@@ -725,13 +750,20 @@ func (f *RemoteFile) Name() string {
 func (f *RemoteFile) Read(b []byte) (n int, err error) {
 	f.m.Lock()
 	defer f.m.Unlock()
+	return f.read_(b)
+}
 
+func (f *RemoteFile) read_(b []byte) (n int, err error) {
+	log.Println("remote file seeking")
 	off, err := f.seek(0, os.SEEK_CUR, f.ctx)
+	log.Println("remote file seek", "off=", off, "err=", err)
 	if err != nil {
 		return -1, err
 	}
 
+	log.Println("readat")
 	n, err = f.readAt(b, off, f.ctx)
+	log.Println("readat, n=", n, "err=", err)
 	if n != 0 {
 		_, e := f.seek(off+int64(n), os.SEEK_SET, f.ctx)
 
@@ -1044,7 +1076,10 @@ func (f *RemoteFile) truncate(size int64, ctx context.Context) error {
 func (f *RemoteFile) Write(b []byte) (n int, err error) {
 	f.m.Lock()
 	defer f.m.Unlock()
+	return f.write_(b)
+}
 
+func (f *RemoteFile) write_(b []byte) (n int, err error) {
 	off, err := f.seek(0, os.SEEK_CUR, f.ctx)
 	if err != nil {
 		return -1, &os.PathError{Op: "write", Path: f.name, Err: err}
@@ -1146,6 +1181,7 @@ func (f *RemoteFile) writeAtChunk(b []byte, off int64, ctx context.Context) (n i
 func copyBuffer(r io.Reader, w io.Writer, buf []byte) (n int64, err error) {
 	for {
 		nr, err := r.Read(buf)
+		log.Println("copyBuffer read", "nr=", nr, "err=", err)
 		if err != nil {
 			if err == io.EOF {
 				return n, nil
@@ -1291,7 +1327,7 @@ func (f *RemoteFile) copyTo(op string, wf *RemoteFile, ctx context.Context) (n i
 		maxBufferSize = maxWriteSize
 	}
 
-	return copyBuffer(f, wf, make([]byte, maxBufferSize))
+	return copyBuffer(&remoteFileR{f}, wf, make([]byte, maxBufferSize))
 }
 
 // ReadFrom implements io.ReadFrom.
@@ -1307,7 +1343,7 @@ func (f *RemoteFile) ReadFrom(r io.Reader) (n int64, err error) {
 
 	maxWriteSize := int(f.fs.maxWriteSize)
 
-	return copyBuffer(r, f, make([]byte, maxWriteSize))
+	return copyBuffer(r, &remoteFileW{f}, make([]byte, maxWriteSize))
 }
 
 // WriteTo implements io.WriteTo.
@@ -1323,7 +1359,8 @@ func (f *RemoteFile) WriteTo(w io.Writer) (n int64, err error) {
 
 	maxReadSize := int(f.fs.maxReadSize)
 
-	return copyBuffer(f, w, make([]byte, maxReadSize))
+	log.Println("copyBuffer")
+	return copyBuffer(&remoteFileR{f}, w, make([]byte, maxReadSize))
 }
 
 func (f *RemoteFile) ioctl(req *IoctlRequest, ctx context.Context) (input, output []byte, err error) {
